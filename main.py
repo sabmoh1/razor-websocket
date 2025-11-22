@@ -1,29 +1,24 @@
 import asyncio
 import websockets
 import logging
+from websockets.http import Headers
 
 logging.basicConfig(level=logging.INFO)
 
-# ضع رابط الويب سوكت الأصلي هنا
-ORIGINAL_WS = "wss://srv1014265.hstgr.cloud:8080/30/8/19?co=3163&cu=9472&lg=en&wh=5288&ipm=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI1MFwvMTI4NDM4NjIyNSIsInBpZCI6IjEiLCJqdGkiOiJpcG1fNjkxNWQwYmIxMWI5MjMuODgwOTcyNTMiLCJhcHAiOiJOQSIsImlubmVyIjoidHJ1ZSIsIm5iZiI6MTc2MzAzNzM3MSwiaWF0IjoxNzYzMDM3MzcxLCJleHAiOjE3NjMwNDA5NzF9.QB8fI__AxxnvglZYsZ-Qh2p2XT_krEWrTmOhRmloTXQ&tok=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiI5OTk5OTk5Iiwicm9sZSI6IlRoYW5vcyIsImlhdCI6MTc2MzAzNzM3MSwiZXhwIjoxNzYzMDM3NDMxfQ.pACEmEtHs3IslxCeq4F-dnXH16X1yfOFh7Db8aW4l6A"
+ORIGINAL_WS = "wss://srv1014265.hstgr.cloud:8080/30/8/19?co=3163&cu=9472&lg=en&wh=5288&ipm=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI1MFwvMTI4NDM4NjIyNSIsInBpZCI6IjEiLCJqdGkiOiJpcG1fNjkxNWQwYmIxMWI5MjMuODgwOTcyNTMiLCJhcHAiOiJOQSIsImlubmVyIjoidHJ1ZSIsIm5iZiI6MTc2MzAzNzM3MSwiaWF0IjoxNzYzMDM3MzcxLCJleHAiOjE3NjMwNDA5NzF9.QB8fI__AxxnvglZYsZ-Qh2p2XT_krEWrTmOhRmloTXQ&tok=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiI5OTk5OTk5Iiwicm9sZSI6IlRoYW5vcyIsImlhdCI6MTc2MzAzNzM3MSwiZXhwIjoxNzYzMDM3NDMxfQ.pACEmEtHs3IslxCeq4F-dnXH16X1yfOFh7Db8aW4l6A"  # رابط الأصلي
 
-
-# قائمة بكل الأشخاص المتصلين بسيرفرك
 connected_clients = set()
 
-
-async def connect_to_original():
-    """الاتصال بالويب سوكت الأصلي ونقل البيانات للعملاء"""
+async def connect_original_ws():
+    """الاتصال بالأصلي وإرسال البيانات فوراً للعملاء."""
     while True:
         try:
-            logging.info("Connecting to ORIGINAL WebSocket...")
+            logging.info("Connecting to ORIGINAL...")
             async with websockets.connect(ORIGINAL_WS) as orig:
-                logging.info("Connected to ORIGINAL WebSocket")
+                logging.info("Connected to ORIGINAL")
 
                 async for message in orig:
-                    logging.info(f"ORIGINAL → {message}")
-
-                    # إرسال الرسالة لكل العملاء المتصلين بسيرفرك
+                    # بث الرسالة فوراً دون أي انتظار
                     dead = []
                     for client in connected_clients:
                         try:
@@ -31,36 +26,58 @@ async def connect_to_original():
                         except:
                             dead.append(client)
 
-                    # حذف العملاء الذين انفصلوا
                     for d in dead:
                         connected_clients.remove(d)
 
         except Exception as e:
-            logging.error(f"Error: {e}")
-            logging.info("Reconnecting in 3 seconds...")
-            await asyncio.sleep(3)
+            logging.error(f"Original connection error: {e}")
+            await asyncio.sleep(2)
 
 
-async def client_handler(websocket, path):
-    """هذا هو WebSocket Server الذي يتصل به المستخدمون"""
+async def server_handler(websocket, path):
+    """WebSocket clients"""
     connected_clients.add(websocket)
     logging.info("Client connected")
 
     try:
-        # ننتظر فقط حتى يغلق العميل الاتصال
         await websocket.wait_closed()
     finally:
-        connected_clients.remove(websocket)
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
         logging.info("Client disconnected")
 
 
-async def main():
-    # شغل السيرفر المحلي الخاص بك
-    server = await websockets.serve(client_handler, "0.0.0.0", 8081)
-    logging.info("Your WebSocket Server is running on ws://0.0.0.0:8081")
+async def http_handler(path, request_headers):
+    """
+    حلّ مشكلة Render/Replit:
+    إذا جاء طلب HTTP عادي → نرجع له صفحة HTML صغيرة.
+    هذا يمنع الخطأ InvalidMessage.
+    """
+    if "Upgrade" not in request_headers:
+        body = b"<h1>WebSocket Relay Server Running</h1>"
+        headers = Headers()
+        headers["Content-Type"] = "text/html"
+        headers["Content-Length"] = str(len(body))
 
-    # شغل الريلاي
-    await connect_to_original()
+        return (200, headers, body)
+
+    # السماح لـ WebSocket upgrade
+    return None
+
+
+async def main():
+    # تشغيل WebSocket + HTTP معاً
+    server = await websockets.serve(
+        server_handler,
+        "0.0.0.0",
+        8081,
+        process_request=http_handler   # ← أهم شيء
+    )
+
+    logging.info("Your WS is running at ws://0.0.0.0:8081")
+
+    await connect_original_ws()
+    await server.wait_closed()
 
 
 asyncio.run(main())
